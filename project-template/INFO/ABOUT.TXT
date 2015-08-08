@@ -1,0 +1,1 @@
+This project is an approach to a custom framework for developing custom probes using the CA UIM Java SDK 
