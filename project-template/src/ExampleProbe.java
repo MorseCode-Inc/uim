@@ -24,6 +24,17 @@ public class ExampleProbe extends CustomProbeSkeleton {
 		
 		// represents the <setup> section in the configuration file
 		PDS setup= (PDS)config.get("setup");
+		
+		// read the configuration file <setup> section
+		int loglevel= setup.getInt("loglevel", 3);
+		NimLog.setLogLevel(loglevel);
+		
+		interval= setup.getInt("interval", 300);
+		
+		if (interval <= 10) {
+			// safety check to make sure the interval is reasonable
+			interval= 10;		// limit the probe to 10 second cycle as the fastest possible execution cycle
+		}
 	}
 	
 	
@@ -33,8 +44,17 @@ public class ExampleProbe extends CustomProbeSkeleton {
 	 */
 	public boolean startup() {
 		
-		int interval= 
-		registerCallbackOnTimer(this, "execute", interval, true);
+		try {
+			registerCallbackOnTimer(this, "execute", interval, true);
+		} catch (NimException nx) {
+			// failure to register callbacks
+			log.error("Callback Registration Failure: "+ nx.getMessage());
+			log.error("Java Exception: "+ nx.toString() +" @"+ nx.getStackTrace()[0].getFileName() +":"+ nx.getStackTrace()[0].getLineNumber());
+			return false;
+		}
+		
+		
+		return true;
 	}
 
 	
