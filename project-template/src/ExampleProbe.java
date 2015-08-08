@@ -24,7 +24,7 @@ public class ExampleProbe extends CustomProbeSkeleton {
 	
 	protected NimLog log;
 	
-	int interval= 300;		// the number of seconds the probe will sleep between calls to execute()
+	private int interval= 300;		// the number of seconds the probe will sleep between calls to execute()
 
 	public ExampleProbe(String[] args) throws NimException {
 		super(PROBE_NAME, PROBE_VERSION, PROBE_MANUFACTURER, args);
@@ -74,5 +74,7 @@ public class ExampleProbe extends CustomProbeSkeleton {
 	public void logWarning(String message) { log.warn(message); }
 	public void logFatal(String message) { log.fatal(message); }
 	public void logError(String message) { log.error(message); }
+	
+	public int getInterval() { return interval; }
 	
 }
