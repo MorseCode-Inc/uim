@@ -4,6 +4,18 @@ import com.nimsoft.nimbus.NimLog;
 import com.nimsoft.nimbus.PDS;
 
 
+/**
+ * 
+ * &copy; MorseCode Incorporated 2015
+ * =--------------------------------=<br/><pre>
+ * Created: Aug 8, 2015
+ * Project: project-template
+ *
+ * Description:
+ * 
+ * </pre></br>
+ * =--------------------------------=
+ */
 public class ExampleProbe extends CustomProbeSkeleton {
 	
 	public static final String PROBE_NAME= "example_probe";
