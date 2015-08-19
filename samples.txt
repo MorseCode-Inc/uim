@@ -1,0 +1,671 @@
+
+--------------------
+
+
+ bin/conf_cdm_disk_mb.sh --------------
+#!/bin/bash
+
+MAX_DISK_TOTAL="200000"
+WARN_MB="5000"
+ERROR_MB="4000"
+
+DOMAIN="UIM"
+THISDIR="${0%/*}"
+NM_ROOT="/opt/nimsoft"
+PATH="$NM_ROOT/bin:$PATH"
+U="administrator"
+P="*******"
+
+cd "$THISDIR"
+
+LOOK_FOR_DISKS="
+C:
+D:
+E:
+F:
+/
+/var
+/opt
+/tmp
+/var/log
+/home
+/usr
+/usr/local
+"
+
+for HUB in $(./list_hubs.sh)
+do
+        ROBOTS=$(./list_robots.sh "$HUB")
+
+        echo "$ROBOTS"| while read ROBOT_NAME
+        do
+
+                [ -z "$ROBOT_NAME" ] && continue;
+
+                ROBOT_ADDRESS="$DOMAIN/$HUB/$ROBOT_NAME"
+                CDM_ADDRESS="/$DOMAIN/$HUB/$ROBOT_NAME/cdm"
+                CONTROLLER_ADDRESS="/$DOMAIN/$HUB/$ROBOT_NAME/controller"
+
+                echo
+                echo "$CDM_ADDRESS"
+
+                #echo pu -u "$U" -p "$P" "$CDM_ADDRESS" "$@"
+                DISKS=$(pu -u "$U" -p "$P" "$CDM_ADDRESS" disk_status "" "" | sed -e "s/\\\//g")
+                RC="$?"
+                if [ "$RC" != 0 ]
+                then
+
+                        echo "WARN pu command failure ($RC): $DISKS" >&2
+                        continue
+                fi
+
+                I=0
+                echo "$DISKS" | grep -A11 FileSys |
+                while read KEY DATATYPE SIZE VALUE
+                do
+                        #echo "$I $KEY='$VALUE'"
+                        (( I+= 1 ))
+
+                        case "$KEY" in
+
+                        DiskActive) #='1'
+                                DISK_ACTIVE="$VALUE"
+                                # skip if the disk is not active
+                                if [ "$DISK_ACTIVE" != "1" ]
+                                then
+                                        break
+                                fi
+                                ;;
+                        DiskTotal) #='61087'
+                                DISK_TOTAL="$VALUE"
+                                ;;
+                        DiskFree) #='48022'
+                                DISK_FREE="$VALUE"
+                                ;;
+                        DiskAvail) #='48022'
+                                DISK_AVAIL="$VALUE"
+                                ;;
+                        DiskUsed) #='13065'
+                                DISK_USED="$VALUE"
+                                ;;
+                        TypeDesc)
+                                # skip if the disk is not local
+                                if [ "$VALUE" != "Local" ]
+                                then
+                                        break
+                                fi
+                                ;;
+                        FileSys)
+                                FILESYS="$VALUE"
+                                if [ "$SIZE" -gt 18 ]
+                                then
+                                        echo "WARN: Unable to configure $CDM_ADDRESS $KEY $VALUE is too long, and may be truncated." >&2
+                                        break
+                                fi
+
+                                # see if we care about this one
+                                FOUND=$(echo "$LOOK_FOR_DISKS" | grep "^$FILESYS")
+                                if [ -z "$FOUND" ]
+                                then
+                                        break
+                                fi
+                                ;;
+
+                        DiskUsedPct) #='21'
+                                DISK_USED_PCNT="$VALUE"
+                                # this is the last piece of data we need to have all of the information for this disk
+
+                                if [ "$DISK_TOTAL" -gt "$MAX_DISK_TOTAL" ]
+                                then
+                                        # this disk is big enough, make sure it is configured to be monitored in MB, not %
+
+                                        if [ "$FILESYS" != "${FILESYS#*:}" ]
+                                        then
+                                                FILESYS=$(echo "$FILESYS" | sed -e "s/:/:\\\\/")
+                                                CONFIG_BASE="/disk/alarm/fixed/$(echo "$FILESYS" | sed -e "s/\//#/g")"
+                                        fi
+
+                                        CONFIG_BASE="/disk/alarm/fixed/$(echo "$FILESYS" | sed -e "s/\//#/g")"
+
+
+                                        echo
+                                        echo "# Configuring: $ROBOT $FILESYS total=$DISK_TOTAL free=$DISK_FREE"
+
+                                        PERCENT=$(pu -u "$U" -p "$P" "$CONTROLLER_ADDRESS" probe_config_get cdm "$ROBOT" "$CONFIG_BASE/percent" | grep "^value" | awk '{print $4}')
+                                        ERROR_THRESH=$(pu -u "$U" -p "$P" "$CONTROLLER_ADDRESS" probe_config_get cdm "$ROBOT" "$CONFIG_BASE/error/threshold" | grep "^value"| awk '{print $4}')
+                                        WARN_THRESH=$(pu -u "$U" -p "$P" "$CONTROLLER_ADDRESS" probe_config_get cdm "$ROBOT" "$CONFIG_BASE/warning/threshold" | grep "^value"| awk '{print $4}')
+
+                                        ## percentage = no
+                                        SET_CONFIG=$(pu -u "$U" -p "$P" "$CONTROLLER_ADDRESS" probe_config_set cdm "$CONFIG_BASE" "percent" "no" "1" "$ROBOT")
+                                        #[ "$?" == 0 ] && echo OK || echo ERROR "$SET_CONFIG" >&2
+                                        echo "$SET_CONFIG"
+
+
+                                        ## error/threshold = $ERROR_MB
+                                        SET_CONFIG=$(pu -u "$U" -p "$P" "$CONTROLLER_ADDRESS" probe_config_set cdm "$CONFIG_BASE/error" "threshold" "$ERROR_MB" "1" "$ROBOT")
+                                        #[ "$?" == 0 ] && echo OK || echo ERROR "$SET_CONFIG" >&2
+                                        echo "$SET_CONFIG"
+
+
+                                        ## warning/threshold = $ERROR_MB
+                                        SET_CONFIG=$(pu -u "$U" -p "$P" "$CONTROLLER_ADDRESS" probe_config_set cdm "$CONFIG_BASE/warning" "threshold" "$WARN_MB" "1" "$ROBOT")
+                                        #[ "$?" == 0 ] && echo OK || echo ERROR "$SET_CONFIG" >&2
+                                        echo "$SET_CONFIG"
+
+                                        ## restart
+                                        SET_CONFIG=$(pu -u "$U" -p "$P" "$CDM_ADDRESS" _stop)
+                                        #[ "$?" == 0 ] && echo OK || echo ERROR "$SET_CONFIG" >&2
+                                        echo "$SET_CONFIG"
+
+                                fi
+
+
+                                ;;
+                        esac
+
+
+
+                done
+
+        done
+
+#break  # temporary break to bail after the first hub.
+
+done
+
+exit
+
+============================
+
+ bin/gen_url_response.cfx --------------
+#!/bin/bash
+
+
+URLS="
+# profile       group           url to check
+google          search_engines  http://www.google.com
+yahoo           search_engines  http://www.yahoo.com
+
+sugarcrm        webapps         http://www.sugarcrm.com
+rallydev        vendor_tools    http://www.rallydev.com
+"
+
+gen_profile() {
+cat << EOF
+   <$PROFILE> overwrite
+      active = yes
+      challenge_response = no
+      authentication_type = 0
+      QoS = yes
+      QoS_bytes_sec = no
+      QoS_bytes = no
+      QoS_dns_resolution_time = yes
+      QoS_download_time = no
+      QoS_firstbyte_time = yes
+      QoS_lastbyte_time = no
+      QoS_redirect_time = no
+      QoS_substring_found = no
+      QoS_tcpconnect_time = no
+      buffer_size =
+      interval = 300
+      retry = 3
+      timeout = 30
+      head =
+      url = $URL
+      host =
+      user =
+      password =
+      source = amaz-cpmap-pr01
+      group = $PROFILE_GROUP
+      scheduling = rules
+      ignore_connection_time = no
+      ssl_active = no
+      enable_redirect_retry = no
+      redirect_retry_count =
+      redirect_retry_delay =
+      ignore_SSL_error = no
+      ConfigureClientCertificate = no
+      ClientCertificateName =
+      ClientPrivateKeyFilename =
+      ClientCertificatePassword =
+      <alarm>
+         active = yes
+         average = no
+         dump_on_error = no
+         not_match = no
+         regexp_defined = no
+         max_samples = 5
+         severity =
+         threshold = 13000
+         thresholdBelow =
+         thresholdFetchBytes = -1
+         config_error =
+         contains_unexpected =
+         does_not_contain =
+         failed =
+         match_string =
+         subsystem =
+         time_limit =
+         dns_resolution_time_message =
+         download_time_message =
+         first_bytefetch_time_message =
+         last_bytefetch_time_message =
+         redirect_time_message =
+         tcp_connect_time_message =
+         cert_expired_message =
+         cert_to_expire_message =
+         delayed_override =
+         dns_resolution_time = 20
+         download_time =
+         first_bytefetch_time =
+         last_bytefetch_time =
+         redirect_time =
+         tcp_connect_time =
+         cert_to_expire = yes
+         cert_expire = yes
+         days_toalarm_cert_expire = 30
+      </alarm>
+      <proxy>
+         port =
+         host =
+         ssl_type = 0
+         user =
+         password =
+      </proxy>
+   </$PROFILE>
+EOF
+}       # gen_profile
+
+
+echo "<profiles>"
+
+echo "$URLS" | while read PROFILE PROFILE_GROUP URL
+do
+        PROFILE="${PROFILE%%#*}"
+        if [ -z "$PROFILE" ]; then continue; fi
+
+
+        gen_profile
+done
+
+
+
+echo "</profiles>"
+
+
+exit
+
+============================
+
+ bin/hub_command.sh --------------
+#!/bin/bash
+
+NM_ROOT="/opt/nimsoft"
+
+PATH="$NM_ROOT/bin:$PATH"
+
+
+HUBS="
+#Name|Address|Security|Status|License|Version|IP|Communication Mode|Port|Domain|Robot
+AMAZ|/OtterProducts/AMAZ/amaz-nmhub-01/hub|Enabled|OK|OK|7.63 [Build 7.63.2771, Dec 10 2014]|10.132.128.240||48002|OtterProducts|amaz-nmhub-01
+AMCN|/OtterProducts/AMCN/amcn-nmhub-01/hub|Enabled|OK|OK|7.71 [Build 7.71.3186, Apr  2 2015]|10.32.128.200||48002|OtterProducts|amcn-nmhub-01
+AMDN|/OtterProducts/AMDN/86527-MSTS02_OBX/hub|Enabled|OK|OK|7.63 [Build 7.63.2771, Dec 10 2014]|10.128.128.178||48002|OtterProducts|86527-MSTS02_OBX
+AMHQ|/OtterProducts/AMHQ/amhq-nmhub-02/hub|Enabled|OK|OK|7.63 [Build 7.63.2771, Dec 10 2014]|10.0.128.203||48002|OtterProducts|amhq-nmhub-02
+AMSD|/OtterProducts/AMSD/amsd-nmhub-01/hub|Enabled|OK|OK|7.63 [Build 7.63.2771, Dec 10 2014]|10.33.128.200||48002|OtterProducts|amsd-nmhub-01
+APHK|/OtterProducts/APHK/aphk-nmhub-01/hub|Enabled|OK|OK|7.71 [Build 7.71.3186, Apr  2 2015]|10.8.128.200||48002|OtterProducts|aphk-nmhub-01
+CoreA|/OtterProducts/CoreA/AMHQ-NMHUB-03/hub|Enabled|OK|OK|7.63 [Build 7.63.2771, Dec 10 2014]|10.0.128.95||48002|OtterProducts|AMHQ-NMHUB-03
+EUIE|/OtterProducts/EUIE/euie-nmhub-01/hub|Enabled|OK|OK|7.71 [Build 7.71.3186, Apr  2 2015]|10.64.128.200||48002|OtterProducts|euie-nmhub-01
+FCDC|/OtterProducts/FCDC/fcdc-nmhub-01/hub|Enabled|OK|OK|7.71 [Build 7.71.3186, Apr  2 2015]|10.1.128.200||48002|OtterProducts|fcdc-nmhub-01
+Proxy01|/OtterProducts/Proxy01/amhq-nmproxy-01/hub|Enabled|OK|OK|7.63 [Build 7.63.2771, Dec 10 2014]|10.0.192.203||48002|OtterProducts|amhq-nmproxy-01
+SLDC|/OtterProducts/SLDC/sldc-nmhub-01/hub|Enabled|OK|OK|7.63 [Build 7.63.2771, Dec 10 2014]|10.10.128.200||48002|OtterProducts|sldc-nmhub-01
+"
+
+ROBOT_CFG="$NM_ROOT/robot/robot.cfg"
+
+HUB="$1"
+if [ -z "$HUB" ]
+then
+        HUBROBOT=$(grep hubrobotname "$ROBOT_CFG" | sed -e "s/.* = //g")
+        HUB=$(grep "hub = " "$ROBOT_CFG" | sed -e "s/.* = //g")
+        shift
+else
+        HUB_INFO=$(echo "$HUBS" | grep "^$HUB|")
+        if [ -z "$HUB_INFO" ]
+        then
+                HUBROBOT=$(grep hubrobotname "$ROBOT_CFG" | sed -e "s/.* = //g")
+                HUB=$(grep "hub = " "$ROBOT_CFG" | sed -e "s/.* = //g")
+        else
+                shift
+        fi
+fi
+
+
+# get the hub for the current robot
+HUB_INFO=$(echo "$HUBS" | grep "^$HUB|")
+echo "hub info: $HUB_INFO"
+#pu /OtterProducts/AMHQ/amhq-nmhub-02/hub
+HUB_NAME="${HUB_INFO%%|*}"; HUB_INFO="${HUB_INFO#*\|}"
+HUB_ADDRESS="${HUB_INFO%%|*}"; HUB_INFO="${HUB_INFO#*|}"
+HUB_SECURITY="${HUB_INFO%%|*}"; HUB_INFO="${HUB_INFO#*|}"
+HUB_STATUS="${HUB_INFO%%|*}"; HUB_INFO="${HUB_INFO#*|}"
+HUB_LICENSE="${HUB_INFO%%|*}"; HUB_INFO="${HUB_INFO#*|}"
+HUB_VERSION="${HUB_INFO%%|*}"; HUB_INFO="${HUB_INFO#*|}"
+HUB_IP="${HUB_INFO%%|*}"; HUB_INFO="${HUB_INFO#*|}"
+HUB_MODE="${HUB_INFO%%|*}"; HUB_INFO="${HUB_INFO#*|}"
+HUB_PORT="${HUB_INFO%%|*}"; HUB_INFO="${HUB_INFO#*|}"
+HUB_DOMAIN="${HUB_INFO%%|*}"; HUB_INFO="${HUB_INFO#*|}"
+HUB_ROBOT="${HUB_INFO%%|*}"; HUB_INFO="${HUB_INFO#*|}"
+
+U="administrator"
+P="Nimsoft123"
+pu -u "$U" -p "$P" "$HUB_ADDRESS" "$@"
+#echo pu -u "$U" -p "$P" "$HUB_ADDRESS" "$@" >&2
+
+
+exit
+
+============================
+
+ bin/hub_info.sh --------------
+#!/bin/bash
+
+NM_ROOT="/opt/nimsoft"
+
+PATH="$NM_ROOT/bin:$PATH"
+
+
+HUBS="
+#Name|Address|Security|Status|License|Version|IP|Communication Mode|Port|Domain|Robot
+AMAZ|/OtterProducts/AMAZ/amaz-nmhub-01/hub|Enabled|OK|OK|7.63 [Build 7.63.2771, Dec 10 2014]|10.132.128.240||48002|OtterProducts|amaz-nmhub-01
+AMCN|/OtterProducts/AMCN/amcn-nmhub-01/hub|Enabled|OK|OK|7.71 [Build 7.71.3186, Apr  2 2015]|10.32.128.200||48002|OtterProducts|amcn-nmhub-01
+AMDN|/OtterProducts/AMDN/86527-MSTS02_OBX/hub|Enabled|OK|OK|7.63 [Build 7.63.2771, Dec 10 2014]|10.128.128.178||48002|OtterProducts|86527-MSTS02_OBX
+AMHQ|/OtterProducts/AMHQ/amhq-nmhub-02/hub|Enabled|OK|OK|7.63 [Build 7.63.2771, Dec 10 2014]|10.0.128.203||48002|OtterProducts|amhq-nmhub-02
+AMSD|/OtterProducts/AMSD/amsd-nmhub-01/hub|Enabled|OK|OK|7.63 [Build 7.63.2771, Dec 10 2014]|10.33.128.200||48002|OtterProducts|amsd-nmhub-01
+APHK|/OtterProducts/APHK/aphk-nmhub-01/hub|Enabled|OK|OK|7.71 [Build 7.71.3186, Apr  2 2015]|10.8.128.200||48002|OtterProducts|aphk-nmhub-01
+CoreA|/OtterProducts/CoreA/AMHQ-NMHUB-03/hub|Enabled|OK|OK|7.63 [Build 7.63.2771, Dec 10 2014]|10.0.128.95||48002|OtterProducts|AMHQ-NMHUB-03
+EUIE|/OtterProducts/EUIE/euie-nmhub-01/hub|Enabled|OK|OK|7.71 [Build 7.71.3186, Apr  2 2015]|10.64.128.200||48002|OtterProducts|euie-nmhub-01
+FCDC|/OtterProducts/FCDC/fcdc-nmhub-01/hub|Enabled|OK|OK|7.71 [Build 7.71.3186, Apr  2 2015]|10.1.128.200||48002|OtterProducts|fcdc-nmhub-01
+Proxy01|/OtterProducts/Proxy01/amhq-nmproxy-01/hub|Enabled|OK|OK|7.63 [Build 7.63.2771, Dec 10 2014]|10.0.192.203||48002|OtterProducts|amhq-nmproxy-01
+SLDC|/OtterProducts/SLDC/sldc-nmhub-01/hub|Enabled|OK|OK|7.63 [Build 7.63.2771, Dec 10 2014]|10.10.128.200||48002|OtterProducts|sldc-nmhub-01
+"
+
+ROBOT_CFG="$NM_ROOT/robot/robot.cfg"
+
+HUB="$1"
+if [ -z "$HUB" ]
+then
+        HUBROBOT=$(grep hubrobotname "$ROBOT_CFG" | sed -e "s/.* = //g")
+        HUB=$(grep "hub = " "$ROBOT_CFG" | sed -e "s/.* = //g")
+fi
+
+
+# get the hub for the current robot
+HUB_INFO=$(echo "$HUBS" | grep "^$HUB|")
+
+#pu /OtterProducts/AMHQ/amhq-nmhub-02/hub
+HUB_NAME="${HUB_INFO%%|*}"; HUB_INFO="${HUB_INFO#*\|}"
+HUB_ADDRESS="${HUB_INFO%%|*}"; HUB_INFO="${HUB_INFO#*|}"
+HUB_SECURITY="${HUB_INFO%%|*}"; HUB_INFO="${HUB_INFO#*|}"
+HUB_STATUS="${HUB_INFO%%|*}"; HUB_INFO="${HUB_INFO#*|}"
+HUB_LICENSE="${HUB_INFO%%|*}"; HUB_INFO="${HUB_INFO#*|}"
+HUB_VERSION="${HUB_INFO%%|*}"; HUB_INFO="${HUB_INFO#*|}"
+HUB_IP="${HUB_INFO%%|*}"; HUB_INFO="${HUB_INFO#*|}"
+HUB_MODE="${HUB_INFO%%|*}"; HUB_INFO="${HUB_INFO#*|}"
+HUB_PORT="${HUB_INFO%%|*}"; HUB_INFO="${HUB_INFO#*|}"
+HUB_DOMAIN="${HUB_INFO%%|*}"; HUB_INFO="${HUB_INFO#*|}"
+HUB_ROBOT="${HUB_INFO%%|*}"; HUB_INFO="${HUB_INFO#*|}"
+
+
+echo "Name: $HUB_NAME"
+echo "Hub Address: $HUB_ADDRESS"
+echo "Hub Status: $HUB_STATUS"
+#echo "Hub License: $HUB_LICENSE"
+echo "Hub Version: $HUB_VERSION"
+echo "Hub IP: $HUB_IP"
+#echo "Hub Mode: $HUB_MODE"
+#echo "Hub Port: $HUB_PORT"
+echo "Domain: $HUB_DOMAIN"
+echo "Robot: $HUB_ROBOT"
+#echo "Security: $HUB_SECURITY"
+
+
+exit
+
+============================
+
+
+
+============================
+
+ bin/list_hubs.sh --------------
+#!/bin/bash
+
+HUB="$1"
+
+DATA=$(hub_command.sh "$HUB" gethubs "" "")
+#echo "data: $DATA"
+
+echo "$DATA" | grep name | grep -v robotname | awk '{print $4}'
+
+exit
+
+============================
+
+ bin/list_probes.sh --------------
+#!/bin/bash
+
+HUB="$1"
+ROBOT="$2"
+
+VALID_ROBOT=$(hub_command.sh "$HUB" getrobots "$ROBOT" "")
+
+if [ -z "$VALID_ROBOT" ]
+then
+        echo "No data for robot: $ROBOT"
+        exit 1
+fi
+
+
+
+exit
+
+============================
+
+ bin/list_robots.sh --------------
+#!/bin/bash
+
+HUB="$1"
+
+DATA=$(hub_command.sh "$HUB" getrobots "" "")
+#echo "data: $DATA"
+
+echo "$DATA" | grep name | awk '{print $4}'
+
+exit
+
+============================
+
+ bin/robot_command.sh --------------
+#!/bin/bash
+
+NM_ROOT="/opt/nimsoft"
+
+PATH="$NM_ROOT/bin:$PATH"
+
+
+ROBOT_CFG="$NM_ROOT/robot/robot.cfg"
+
+ROBOT_ADDRESS="$1"
+shift
+
+if [ -z "$ROBOT_ADDRESS" ]
+then
+        ROBOT_ADDRESS="controller"
+fi
+
+U="administrator"
+P="*********"
+pu -u "$U" -p "$P" "$ROBOT_ADDRESS" "$@"
+
+
+exit
+
+============================
+
+ etc/urls.txt --------------
+#!/bin/bash
+
+
+get_data() {
+cat << EOF
+#SERVICE|WEBDOMAIN|TEAM|ENVIRONMENT
+EOF
+}
+
+
+subsystem_map() {
+cat << EOF
+Responsible Team|Environment|Subsystem
+DevOps Team|PROD|3.2.1
+DevOps Team|STAGE|3.2.2
+DevOps Team|TST|3.2.3
+DevOps Team|DEV|3.2.4
+DevOps Team|EDU|3.2.5
+EOF
+}
+
+gen_profile() {
+cat << EOF
+   <$PROFILE> overwrite
+      active = no
+      challenge_response = no
+      authentication_type = 0
+      QoS = yes
+      QoS_bytes_sec = no
+      QoS_bytes = no
+      QoS_dns_resolution_time = yes
+      QoS_download_time = no
+      QoS_firstbyte_time = yes
+      QoS_lastbyte_time = no
+      QoS_redirect_time = no
+      QoS_substring_found = no
+      QoS_tcpconnect_time = no
+      buffer_size =
+      interval = 300
+      retry = 3
+      timeout = 30
+      head =
+      url = $URL
+      host =
+      user =
+      password =
+      source = $SOURCE
+      group = $PROFILE_GROUP
+      scheduling = rules
+      ignore_connection_time = no
+      ssl_active = no
+      enable_redirect_retry = no
+      redirect_retry_count =
+      redirect_retry_delay =
+      ignore_SSL_error = no
+      ConfigureClientCertificate = no
+      ClientCertificateName =
+      ClientPrivateKeyFilename =
+      ClientCertificatePassword =
+      <alarm>
+         active = yes
+         average = no
+         dump_on_error = no
+         not_match = no
+         regexp_defined = no
+         max_samples = 5
+         severity =
+         threshold = 13000
+         thresholdBelow =
+         thresholdFetchBytes = -1
+         config_error =
+         contains_unexpected =
+         does_not_contain =
+         failed =
+         match_string =
+         subsystem = $SUBSYSTEM_ID
+         time_limit =
+         dns_resolution_time_message =
+         download_time_message =
+         first_bytefetch_time_message =
+         last_bytefetch_time_message =
+         redirect_time_message =
+         tcp_connect_time_message =
+         cert_expired_message =
+         cert_to_expire_message =
+         delayed_override =
+         dns_resolution_time = 20
+         download_time =
+         first_bytefetch_time =
+         last_bytefetch_time =
+         redirect_time =
+         tcp_connect_time =
+         cert_to_expire = yes
+         cert_expire = yes
+         days_toalarm_cert_expire = 30
+      </alarm>
+      <proxy>
+         port =
+         host =
+         ssl_type = 0
+         user =
+         password =
+      </proxy>
+   </$PROFILE>
+EOF
+}       # gen_profile
+
+
+echo "<profiles>"
+
+
+
+get_data | while read LINE
+do
+        if [ -z "$LINE" ]; then continue; fi
+        if [ -z "${LINE%%#*}" ]; then continue; fi
+
+        PROFILE_GROUP="${LINE%%|*}"; LINE="${LINE#*|}"
+        DOMAIN_NAME="${LINE%%|*}"; LINE="${LINE#*|}"
+        SUPPORT_TEAM="${LINE%%|*}"; LINE="${LINE#*|}"
+        ENVIRONMENT="${LINE%%|*}"; LINE="${LINE#*|}"
+
+
+#URLS="
+## profile      group           url to check
+#google         search_engines  http://www.google.com
+#yahoo          search_engines  http://www.yahoo.com
+#
+#rallydev       vendor_tools    http://www.rallydev.com
+#"
+
+        PROFILE="$DOMAIN_NAME"
+        URL="https://$DOMAIN_NAME"
+
+        case "$ENVIRONMENT" in
+        DEV|EDU|TST|PROD)
+                SUBSYSTEM_ID=$(subsystem_map | grep "^$SUPPORT_TEAM|$ENVIRONMENT|" | cut -d"|" -f 3)
+                gen_profile
+                ;;
+        esac
+
+
+
+done
+
+
+
+echo "</profiles>"
+
+
+
+
+exit
+
+
+============================
